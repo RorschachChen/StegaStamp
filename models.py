@@ -1,6 +1,6 @@
 import numpy as np
 import os
-import lpips.lpips_tf as lpips_tf
+import lpips_tf
 import tensorflow as tf
 import utils
 from tensorflow import keras
@@ -35,7 +35,7 @@ class StegaStampEncoder(Layer):
         image = image - .5
 
         secret = self.secret_dense(secret)
-        secret = Reshape((50, 50, 3))(secret)
+        secret = Reshape((4, 4, 3))(secret)
         secret_enlarged = UpSampling2D(size=(8,8))(secret)
 
         inputs = concatenate([secret_enlarged, image], axis=-1)
@@ -60,6 +60,97 @@ class StegaStampEncoder(Layer):
         conv10 = self.conv10(conv9)
         residual = self.residual(conv9)
         return residual
+
+class CIFAR10StegaStampEncoder(Layer):
+    def __init__(self, height, width):
+        super(CIFAR10StegaStampEncoder, self).__init__()
+        self.secret_dense = Dense(height*width*3, activation='relu', kernel_initializer='he_normal')
+
+        self.conv1 = Conv2D(32, 3, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.conv2 = Conv2D(32, 3, activation='relu', strides=2, padding='same', kernel_initializer='he_normal')
+        self.conv3 = Conv2D(64, 3, activation='relu', strides=2, padding='same', kernel_initializer='he_normal')
+        self.conv4 = Conv2D(128, 3, activation='relu', strides=2, padding='same', kernel_initializer='he_normal')
+        self.conv5 = Conv2D(256, 3, activation='relu', strides=2, padding='same', kernel_initializer='he_normal')
+        self.up6 = Conv2D(128, 2, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.conv6 = Conv2D(128, 3, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.up7 = Conv2D(64, 2, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.conv7 = Conv2D(64, 3, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.up8 = Conv2D(32, 2, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.conv8 = Conv2D(32, 3, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.up9 = Conv2D(32, 2, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.conv9 = Conv2D(32, 3, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.conv10 = Conv2D(32, 3, activation='relu', padding='same', kernel_initializer='he_normal')
+        self.residual = Conv2D(3, 1, activation=None, padding='same', kernel_initializer='he_normal')
+
+    def call(self, inputs):
+        secret, image = inputs
+        secret = secret - .5
+        image = image - .5
+
+        secret = self.secret_dense(secret)
+        secret = Reshape((32, 32, 3))(secret)
+        secret_enlarged = secret # UpSampling2D(size=(8,8))(secret)
+
+        inputs = concatenate([secret_enlarged, image], axis=-1)
+        conv1 = self.conv1(inputs)
+        conv2 = self.conv2(conv1)
+        conv3 = self.conv3(conv2)
+        conv4 = self.conv4(conv3)
+        conv5 = self.conv5(conv4)
+        up6 = self.up6(UpSampling2D(size=(2,2))(conv5))
+        merge6 = concatenate([conv4,up6], axis=3)
+        conv6 = self.conv6(merge6)
+        up7 = self.up7(UpSampling2D(size=(2,2))(conv6))
+        merge7 = concatenate([conv3,up7], axis=3)
+        conv7 = self.conv7(merge7)
+        up8 = self.up8(UpSampling2D(size=(2,2))(conv7))
+        merge8 = concatenate([conv2,up8], axis=3)
+        conv8 = self.conv8(merge8)
+        up9 = self.up9(UpSampling2D(size=(2,2))(conv8))
+        merge9 = concatenate([conv1,up9,inputs], axis=3)
+        conv9 = self.conv9(merge9)
+        conva = self.conv9(merge9)
+        conv10 = self.conv10(conv9)
+        residual = self.residual(conv9)
+        return residual
+
+class CIFAR10StegaStampDecoder(Layer):
+    def __init__(self, secret_size, height, width):
+        super(CIFAR10StegaStampDecoder, self).__init__()
+        self.height = height
+        self.width = width
+        self.stn_params = Sequential([
+            Conv2D(32, (3, 3), strides=2, activation='relu', padding='same'),
+            Conv2D(64, (3, 3), strides=2, activation='relu', padding='same'),
+            Conv2D(128, (3, 3), strides=2, activation='relu', padding='same'),
+            Flatten(),
+            Dense(128, activation='relu')
+        ])
+        initial = np.array([[1., 0, 0], [0, 1., 0]])
+        initial = initial.astype('float32').flatten()
+
+        self.W_fc1 = tf.Variable(tf.zeros([128, 6]), name='W_fc1')
+        self.b_fc1 = tf.Variable(initial_value=initial, name='b_fc1')
+
+        self.decoder = Sequential([
+            Conv2D(32, (3, 3), strides=2, activation='relu', padding='same'),
+            Conv2D(32, (3, 3), activation='relu', padding='same'),
+            Conv2D(64, (3, 3), strides=2, activation='relu', padding='same'),
+            Conv2D(64, (3, 3), activation='relu', padding='same'),
+            Conv2D(64, (3, 3), strides=2, activation='relu', padding='same'),
+            Conv2D(128, (3, 3), strides=2, activation='relu', padding='same'),
+            Conv2D(128, (3, 3), strides=2, activation='relu', padding='same'),
+            Flatten(),
+            Dense(512, activation='relu'),
+            Dense(secret_size)
+        ])
+
+    def call(self, image):
+        image = image - .5
+        stn_params = self.stn_params(image)
+        x = tf.matmul(stn_params, self.W_fc1) + self.b_fc1
+        transformed_image = stn_transformer(image, x, [self.height, self.width, 3])
+        return self.decoder(transformed_image)
 
 class StegaStampDecoder(Layer):
     def __init__(self, secret_size, height, width):
@@ -156,7 +247,8 @@ def transform_net(encoded_image, args, global_step):
     encoded_image_lum = tf.expand_dims(tf.reduce_sum(encoded_image * tf.constant([.3,.6,.1]), axis=3), 3)
     encoded_image = (1 - rnd_sat) * encoded_image + rnd_sat * encoded_image_lum
 
-    encoded_image = tf.reshape(encoded_image, [-1,400,400,3])
+    # encoded_image = tf.reshape(encoded_image, [-1,400,400,3])
+    encoded_image = tf.reshape(encoded_image, [-1, 32, 32, 3])
     if not args.no_jpeg:
         encoded_image = utils.jpeg_compress_decompress(encoded_image, rounding=utils.round_only_at_0, factor=jpeg_factor, downsample_c=True)
 
